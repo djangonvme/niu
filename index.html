@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>小牛 NXT 通用电压切换助手（大小写兼容版）</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f0f2f5; margin: 0; padding: 20px; color: #333; }
+        .card { background: #fff; border-radius: 12px; padding: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); max-width: 400px; margin: 0 auto; }
+        h2 { text-align: center; color: #1a1a1a; font-size: 20px; margin-bottom: 20px; }
+        .btn { width: 100%; padding: 14px; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; margin-bottom: 15px; }
+        .btn-connect { background: #007aff; color: white; }
+        .btn-send { background: #34c759; color: white; }
+        .btn-reset { background: #ff3b30; color: white; font-size: 13px; padding: 8px; margin-top: -5px; }
+        .btn:active { opacity: 0.8; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; font-weight: 600; font-size: 14px; }
+        select { width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 16px; background: #fff; }
+        #status { text-align: center; font-size: 14px; margin-top: 10px; color: #666; }
+    </style>
+</head>
+<body>
+
+<div class="card">
+    <h2>⚡ 小牛 NXT 通用切压助手</h2>
+
+    <button class="btn btn-connect" id="connectBtn" onclick="scanAndConnectBT()">1. 扫描并选择我的车</button>
+    <button class="btn btn-reset" id="resetBtn" style="display:none;" onclick="resetBinding()">解除当前绑定，切换车辆</button>
+
+    <div class="form-group">
+        <label>选择目标电压平台：</label>
+        <select id="voltage">
+            <option value="02">48V 平台</option>
+            <option value="03">60V 平台</option>
+            <option value="05" selected>72V 平台</option>
+        </select>
+    </div>
+
+    <div class="form-group">
+        <label>选择电池容量 (Ah)：</label>
+        <select id="capacity">
+            <option value="01">20 Ah</option>
+            <option value="02">23 Ah</option>
+            <option value="03">26 / 24 Ah</option>
+            <option value="05">32 Ah</option>
+            <option value="06">38 Ah</option>
+            <option value="08">35 Ah</option>
+            <option value="0C" selected>45 Ah</option>
+            <option value="07">48 Ah</option>
+        </select>
+    </div>
+
+    <button class="btn btn-send" onclick="sendConfig()">2. 一键发送切换指令</button>
+
+    <div id="status">状态：未绑定车辆</div>
+</div>
+
+<script>
+    let bluetoothDevice;
+    let writeCharacteristic;
+
+    window.onload = function() {
+        const savedDeviceName = localStorage.getItem('niu_device_name');
+        if (savedDeviceName) {
+            document.getElementById('status').innerText = `状态：已记忆爱车 [${savedDeviceName}]`;
+            document.getElementById('connectBtn').innerText = "连接已绑定的爱车";
+            document.getElementById('resetBtn').style.display = "block";
+        }
+    };
+
+    // 核心：多重条件过滤，兼容 NIU link / NIU Link / niu link 等大小写形式
+    async function scanAndConnectBT() {
+        try {
+            document.getElementById('status').innerText = "状态：正在搜索车辆蓝牙...";
+
+            // 通过传入多个 filters 覆盖常见的大小写变体，确保各类固件都能被系统弹窗筛选出来
+            bluetoothDevice = await navigator.bluetooth.requestDevice({
+                filters: [
+                    { namePrefix: 'NIU Link' },
+                    { namePrefix: 'NIU link' },
+                    { namePrefix: 'niu link' },
+                    { namePrefix: 'NIU' }
+                ],
+                optionalServices: ['0000ffe0-0000-1000-8000-00805f9b34fb', 'ffe0', '0000ff00-0000-1000-8000-00805f9b34fb']
+            });
+
+            localStorage.setItem('niu_device_id', bluetoothDevice.id);
+            localStorage.setItem('niu_device_name', bluetoothDevice.name || 'NIU电动车');
+
+            await setupGATT(bluetoothDevice);
+
+        } catch (error) {
+            console.error(error);
+            document.getElementById('status').innerText = "状态：用户取消或未找到设备";
+        }
+    }
+
+    async function setupGATT(device) {
+        document.getElementById('status').innerText = `正在连接 ${device.name}...`;
+
+        device.addEventListener('gattserverdisconnected', onDisconnected);
+
+        const server = await device.gatt.connect();
+        const services = await server.getPrimaryServices();
+        let found = false;
+
+        for (let service of services) {
+            const characteristics = await service.getCharacteristics();
+            for (let char of characteristics) {
+                if (char.properties.write || char.properties.writeWithoutResponse) {
+                    writeCharacteristic = char;
+                    found = true;
+                    break;
+                }
+            }
+            if (found) break;
+        }
+
+        if (found) {
+            document.getElementById('status').innerText = `状态：[${device.name}] 连接成功！`;
+            document.getElementById('connectBtn').innerText = "重新连接车辆";
+            document.getElementById('resetBtn').style.display = "block";
+            alert(`成功连接到：${device.name}！现在可以切换电压了。`);
+        } else {
+            alert("连接成功，但未能在该设备中找到写指令的通道！");
+        }
+    }
+
+    function onDisconnected() {
+        document.getElementById('status').innerText = "状态：蓝牙已断开，请重新点击连接";
+        writeCharacteristic = null;
+    }
+
+    function resetBinding() {
+        localStorage.removeItem('niu_device_id');
+        localStorage.removeItem('niu_device_name');
+        if (bluetoothDevice && bluetoothDevice.gatt.connected) {
+            bluetoothDevice.gatt.disconnect();
+        }
+        writeCharacteristic = null;
+        document.getElementById('status').innerText = "状态：已清除绑定";
+        document.getElementById('connectBtn').innerText = "1. 扫描并选择我的车";
+        document.getElementById('resetBtn').style.display = "none";
+        alert("已解除绑定，下次可重新扫描选择新车辆。");
+    }
+
+    async function sendConfig() {
+        if (!writeCharacteristic || !bluetoothDevice || !bluetoothDevice.gatt.connected) {
+            alert("请先点击上方按钮连接车辆蓝牙！");
+            return;
+        }
+
+        const vCode = parseInt(document.getElementById('voltage').value, 16);
+        const ahCode = parseInt(document.getElementById('capacity').value, 16);
+
+        const packet = new Uint8Array([
+            0x67, 0x84, 0x85, 0x59, 0x11, 0x12, 0x76, 0x99,
+            0x61, 0x22, 0x92, 0x43, 0x23, 0x54, 0x45, 0x39,
+            0x87, vCode, ahCode, 0x26
+        ]);
+
+        try {
+            if (writeCharacteristic.properties.writeWithoutResponse) {
+                await writeCharacteristic.writeValueWithoutResponse(packet);
+            } else {
+                await writeCharacteristic.writeValue(packet);
+            }
+            document.getElementById('status').innerText = "状态：切换指令发送成功！";
+            alert("指令发送成功！请查看车子仪表盘电量/电压显示是否已刷新。");
+        } catch (error) {
+            console.error(error);
+            alert("发送失败，请确保蓝牙处于连接状态：" + error);
+        }
+    }
+</script>
+
+</body>
+</html>
