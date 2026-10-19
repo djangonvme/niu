@@ -1,0 +1,98 @@
+<view class="page">
+  <view class="card history">
+    <text class="eyebrow">上次连接</text>
+    <text class="history-name">{{lastDeviceName}}</text>
+    <text class="history-time">{{lastConnectedAt}}</text>
+    <text class="hint">{{historyHint}}</text>
+  </view>
+
+  <view class="card">
+    <view class="heading">
+      <text class="title">⚡ 电压切换助手</text>
+      <text class="subtitle">靠近车辆，连接蓝牙后发送配置</text>
+    </view>
+
+    <text class="label">选择要连接的车辆</text>
+    <picker mode="selector" range="{{devices}}" range-key="label"
+      value="{{deviceIndex >= 0 ? deviceIndex : 0}}" disabled="{{busy || devices.length === 0}}"
+      bindchange="onDeviceChange">
+      <view class="select"><text>{{selectedDeviceLabel}}</text><text class="arrow">⌄</text></view>
+    </picker>
+    <view class="selection"><text>已选择蓝牙：</text><text class="selection-name">{{selectedDeviceName}}</text></view>
+    <view class="button-row">
+      <button class="scan-button" bindtap="onScanTap" disabled="{{busy}}" loading="{{scanning}}">
+        {{scanning ? '停止扫描' : '1. 扫描附近 NIU 蓝牙'}}
+      </button>
+      <button wx:if="{{deviceIndex >= 0 && !connected}}" class="reconnect-button"
+        bindtap="onReconnectTap" disabled="{{busy}}">重连</button>
+    </view>
+    <text class="hint purpose">蓝牙仅用于查找、连接车辆并发送你选择的电池配置。</text>
+
+    <view wx:if="{{showChannelChoice && (channels.length > 1 || channelIndex < 0)}}" class="channel-box">
+      <text class="label">车辆命令通道</text>
+      <text class="hint">请根据车辆的实际服务选择写入通道。</text>
+      <picker mode="selector" range="{{channels}}" range-key="label"
+        value="{{channelIndex >= 0 ? channelIndex : 0}}" disabled="{{busy}}" bindchange="onChannelChange">
+        <view class="select"><text>{{channelLabel}}</text><text class="arrow">⌄</text></view>
+      </picker>
+    </view>
+    <view wx:if="{{showWriteModeChoice && writeModeIndex < 0}}" class="channel-box">
+      <text class="label">选择通道写入方式</text>
+      <text class="hint">当前设备未明确报告写入方式，请选择与车辆匹配的模式。</text>
+      <picker mode="selector" range="{{writeModes}}" range-key="label" value="0"
+        disabled="{{busy}}" bindchange="onWriteModeChange">
+        <view class="select"><text>{{writeModeLabel}}</text><text class="arrow">⌄</text></view>
+      </picker>
+    </view>
+
+    <view class="field">
+      <text class="label">目标电压平台</text>
+      <picker mode="selector" range="{{voltageOptions}}" range-key="label" value="{{voltageIndex}}"
+        disabled="{{busy}}" bindchange="onVoltageChange">
+        <view class="select"><text>{{voltageOptions[voltageIndex].label}}</text><text class="arrow">⌄</text></view>
+      </picker>
+    </view>
+    <view class="field">
+      <text class="label">电池容量（Ah）</text>
+      <picker mode="selector" range="{{capacityOptions}}" range-key="label" value="{{capacityIndex}}"
+        disabled="{{busy}}" bindchange="onCapacityChange">
+        <view class="select"><text>{{capacityOptions[capacityIndex].label}}</text><text class="arrow">⌄</text></view>
+      </picker>
+    </view>
+
+    <view class="preview">
+      <text class="preview-title">待发送命令 · 20 字节 HEX</text>
+      <text class="preview-summary">{{commandSummary}}</text>
+      <text class="hex" selectable>{{commandHex}}</text>
+    </view>
+    <button class="send-button" bindtap="onSendTap" disabled="{{!canSend}}" loading="{{sending}}">
+      {{sending ? '正在发送…' : '2. 发送电压切换指令'}}
+    </button>
+    <view class="status"><text>{{status}}</text></view>
+    <button wx:if="{{hasHistory}}" class="clear-button" disabled="{{busy}}" bindtap="onClearHistoryTap">清除连接记录并断开</button>
+  </view>
+
+  <view class="card details">
+    <view class="details-toggle" bindtap="onDetailsTap"><text>连接详情与权限设置</text><text>{{detailsOpen ? '收起 −' : '展开 +'}}</text></view>
+    <view wx:if="{{detailsOpen}}" class="details-content">
+      <view wx:if="{{showChannelChoice}}">
+        <text class="label">命令写入通道</text>
+        <picker mode="selector" range="{{channels}}" range-key="label"
+          value="{{channelIndex >= 0 ? channelIndex : 0}}" disabled="{{busy}}" bindchange="onChannelChange">
+          <view class="select"><text>{{channelLabel}}</text><text class="arrow">⌄</text></view>
+        </picker>
+      </view>
+      <view wx:if="{{showWriteModeChoice}}" class="field">
+        <text class="label">写入方式</text>
+        <picker mode="selector" range="{{writeModes}}" range-key="label"
+          value="{{writeModeIndex >= 0 ? writeModeIndex : 0}}" disabled="{{busy}}" bindchange="onWriteModeChange">
+          <view class="select"><text>{{writeModeLabel}}</text><text class="arrow">⌄</text></view>
+        </picker>
+      </view>
+      <text class="diagnostics" selectable>{{diagnosticsText}}</text>
+      <button class="settings-button" bindtap="onOpenSettingsTap">小程序蓝牙权限设置</button>
+      <button class="settings-button" bindtap="onOpenSystemSettingsTap">微信系统权限设置</button>
+      <button class="settings-button" bindtap="onPrivacyTap">查看隐私保护指引</button>
+    </view>
+  </view>
+</view>

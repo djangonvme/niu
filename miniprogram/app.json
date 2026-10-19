@@ -1,0 +1,11 @@
+{
+  "pages": ["pages/index/index"],
+  "window": {
+    "navigationBarTitleText": "电压切换助手",
+    "navigationBarBackgroundColor": "#f0f2f5",
+    "navigationBarTextStyle": "black",
+    "backgroundColor": "#f0f2f5"
+  },
+  "style": "v2",
+  "lazyCodeLoading": "requiredComponents"
+}

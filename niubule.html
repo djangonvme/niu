@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>小牛 NXT 电压一键切换助手</title>
     <style>
+        * { box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f0f2f5; margin: 0; padding: 20px; color: #333; }
         .card { background: #fff; border-radius: 12px; padding: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); max-width: 400px; margin: 0 auto; }
         h2 { text-align: center; color: #1a1a1a; font-size: 20px; margin-bottom: 20px; }
@@ -13,31 +14,45 @@
         .btn-send { background: #34c759; color: white; }
         .btn-reset { background: #ff3b30; color: white; font-size: 13px; padding: 8px; margin-top: -5px; }
         .btn:active { opacity: 0.8; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
         .form-group { margin-bottom: 15px; }
         label { display: block; margin-bottom: 5px; font-weight: 600; font-size: 14px; }
         select { width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 16px; background: #fff; }
+        .connection-history, .command-preview { padding: 12px; border-radius: 8px; margin-bottom: 16px; font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
+        .connection-history { background: #eef5ff; }
+        .hint { color: #666; font-size: 12px; }
+        .selected-device { margin-top: 8px; font-size: 14px; color: #005bbd; overflow-wrap: anywhere; }
+        .command-preview { background: #f8f9fa; border: 1px solid #e1e4e8; }
+        #commandHex { display: block; margin-top: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 14px; line-height: 1.8; }
         #status { font-size: 13px; margin-top: 10px; color: #666; background: #f8f9fa; padding: 10px; border-radius: 6px; line-height: 1.5; }
     </style>
 </head>
 <body>
 
 <div class="card">
+    <div class="connection-history" aria-live="polite">
+        <div>上次连接蓝牙：<strong id="lastDeviceName">暂无记录</strong></div>
+        <div>连接时间：<span id="lastConnectedAt">—</span></div>
+        <div class="hint" id="historyHint">连接成功后会自动记录名称和时间。</div>
+    </div>
+
     <h2>⚡ 小牛 NXT 电压切换助手</h2>
 
     <!-- 蓝牙设备选择下拉框 -->
     <div class="form-group">
-        <label>选择要连接的车辆：</label>
+        <label for="deviceSelect">选择要连接的车辆：</label>
         <select id="deviceSelect" onchange="selectDeviceFromDropdown()">
             <option value="">-- 请先点击下方按钮扫描车辆 --</option>
         </select>
+        <div class="selected-device" aria-live="polite">已选择蓝牙：<strong id="selectedDeviceName">尚未选择</strong></div>
     </div>
 
-    <button class="btn btn-scan" onclick="scanBluetoothDevices()">1. 扫描周围 NIU link 蓝牙</button>
-    <button class="btn btn-reset" id="resetBtn" style="display:none;" onclick="resetBinding()">清除历史绑定记录</button>
+    <button class="btn btn-scan" id="scanBtn" onclick="scanBluetoothDevices()">1. 扫描周围 NIU link 蓝牙</button>
+    <button class="btn btn-reset" id="resetBtn" style="display:none;" onclick="resetBinding()">清除本页连接记录</button>
 
     <div class="form-group" style="margin-top: 15px;">
-        <label>选择目标电压平台：</label>
-        <select id="voltage">
+        <label for="voltage">选择目标电压平台：</label>
+        <select id="voltage" onchange="updateCommandPreview()">
             <option value="02">48V 平台</option>
             <option value="03">60V 平台</option>
             <option value="05" selected>72V 平台</option>
@@ -45,8 +60,8 @@
     </div>
 
     <div class="form-group">
-        <label>选择电池容量 (Ah)：</label>
-        <select id="capacity">
+        <label for="capacity">选择电池容量 (Ah)：</label>
+        <select id="capacity" onchange="updateCommandPreview()">
             <option value="01">20 Ah</option>
             <option value="02">23 Ah</option>
             <option value="03">26 / 24 Ah</option>
@@ -58,180 +73,280 @@
         </select>
     </div>
 
-    <button class="btn btn-send" onclick="sendConfig()">2. 一键发送电压切换指令</button>
+    <div class="command-preview" aria-live="polite">
+        <strong>待发送命令（20 字节 · HEX）</strong>
+        <div id="commandSummary"></div>
+        <code id="commandHex"></code>
+    </div>
 
-    <div id="status">状态：未连接</div>
+    <button class="btn btn-send" id="sendBtn" onclick="sendConfig()" disabled>2. 一键发送电压切换指令</button>
+
+    <div id="status" role="status">状态：未连接</div>
 </div>
 
 <script>
-    let bluetoothDevice;
-    let writeCharacteristic;
-    let discoveredDevices = new Map(); // 缓存扫描到的设备
+    const HISTORY_KEY = 'niu_last_connection';
+    const discoveredDevices = new Map();
+    let bluetoothDevice = null;
+    let writeCharacteristic = null;
+    let isBusy = false;
 
-    window.onload = function() {
-        const lastDeviceName = localStorage.getItem('niu_last_name');
-        const selectBox = document.getElementById('deviceSelect');
+    function deviceName(device) {
+        return device.name || `未命名蓝牙 (${device.id})`;
+    }
 
-        if (lastDeviceName) {
-            // 在下拉框中展示上次连接的历史车辆
-            let option = document.createElement('option');
-            option.value = "last_saved";
-            option.text = `⭐ 上次连接: ${lastDeviceName} (点击快速重连)`;
-            selectBox.appendChild(option);
-            selectBox.value = "last_saved";
-
-            document.getElementById('status.innerText` = `状态：已加载历史记忆 [${lastDeviceName}]，请点击扫描或直接连接`;
-            document.getElementById('resetBtn').style.display = "block";
+    function showConnectionHistory(record) {
+        document.getElementById('lastDeviceName').textContent = record ? record.name : '暂无记录';
+        let timeText = '—';
+        if (record) {
+            const date = record.connectedAt ? new Date(record.connectedAt) : null;
+            if (date && !Number.isNaN(date.getTime())) {
+                const pad = value => String(value).padStart(2, '0');
+                timeText = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+            } else {
+                timeText = '旧记录未保存时间，连接成功后更新';
+            }
         }
-    };
+        document.getElementById('lastConnectedAt').textContent = timeText;
+        document.getElementById('historyHint').textContent = record
+            ? '再次打开页面后，请扫描并重新连接车辆。'
+            : '连接成功后会自动记录名称和时间。';
+        document.getElementById('resetBtn').style.display = record ? 'block' : 'none';
+    }
+
+    function loadConnectionHistory() {
+        try {
+            let record = null;
+            try {
+                record = JSON.parse(localStorage.getItem(HISTORY_KEY));
+            } catch (error) {
+                console.warn('历史记录无法解析', error);
+            }
+            if (!record || typeof record.name !== 'string' || !record.name) {
+                const oldName = localStorage.getItem('niu_last_name');
+                record = oldName ? { name: oldName, connectedAt: null } : null;
+            }
+            showConnectionHistory(record);
+        } catch (error) {
+            document.getElementById('historyHint').textContent = '当前浏览器无法读取连接记录。';
+        }
+    }
+
+    function saveConnectionHistory(device) {
+        const record = { name: deviceName(device), connectedAt: new Date().toISOString() };
+        showConnectionHistory(record);
+        try {
+            localStorage.setItem(HISTORY_KEY, JSON.stringify(record));
+        } catch (error) {
+            document.getElementById('historyHint').textContent = '当前浏览器无法保存记录，下次打开可能无法保留。';
+        }
+    }
+
+    function updateControls() {
+        for (const id of ['scanBtn', 'deviceSelect', 'resetBtn', 'voltage', 'capacity']) {
+            document.getElementById(id).disabled = isBusy;
+        }
+        document.getElementById('sendBtn').disabled = isBusy || !writeCharacteristic ||
+            !bluetoothDevice || !bluetoothDevice.gatt.connected;
+    }
+
+    function disconnectCurrentDevice() {
+        writeCharacteristic = null;
+        if (bluetoothDevice) {
+            bluetoothDevice.removeEventListener('gattserverdisconnected', onDisconnected);
+            if (bluetoothDevice.gatt.connected) bluetoothDevice.gatt.disconnect();
+        }
+        bluetoothDevice = null;
+    }
 
     // 1. 扫描蓝牙设备并填充到下拉框
     async function scanBluetoothDevices() {
+        if (isBusy) return;
+        if (!navigator.bluetooth || !navigator.bluetooth.requestDevice) {
+            updateStatus('当前浏览器不支持网页蓝牙，请在 Bluefy 中打开此 HTTPS 页面。');
+            return;
+        }
+        isBusy = true;
+        updateControls();
         try {
             updateStatus("正在搜索周围的 NIU link 车辆...");
 
             // 兼容大小写前缀过滤
-            bluetoothDevice = await navigator.bluetooth.requestDevice({
+            const device = await navigator.bluetooth.requestDevice({
                 filters: [
                     { namePrefix: 'NIU Link' },
                     { namePrefix: 'NIU link' },
                     { namePrefix: 'niu link' },
                     { namePrefix: 'NIU' }
                 ],
-                optionalServices: ['0000ffe0-0000-1000-8000-00805f9b34fb', 'ffe0', '0000ff00-0000-1000-8000-00805f9b34fb']
+                optionalServices: ['0000ffe0-0000-1000-8000-00805f9b34fb', '0000ff00-0000-1000-8000-00805f9b34fb']
             });
 
-            if (bluetoothDevice) {
-                discoveredDevices.set(bluetoothDevice.id, bluetoothDevice);
-
-                // 更新下拉框选项
-                const selectBox = document.getElementById('deviceSelect');
-                // 检查下拉框是否已有该设备，没有则追加
-                let exists = false;
-                for (let i = 0; i < selectBox.options.length; i++) {
-                    if (selectBox.options[i].text.includes(bluetoothDevice.name)) {
-                        exists = true;
-                        break;
-                    }
-                }
-
-                if (!exists) {
-                    let option = document.createElement('option');
-                    option.value = bluetoothDevice.id;
-                    option.text = `🚗 ${bluetoothDevice.name} (当前扫描)`;
-                    selectBox.appendChild(option);
-                    selectBox.value = bluetoothDevice.id;
-                }
-
-                // 记录历史
-                localStorage.setItem('niu_last_name', bluetoothDevice.name);
-                document.getElementById('resetBtn').style.display = "block";
-
-                // 自动连接选中的设备
-                await connectSelectedDevice(bluetoothDevice);
+            if (!device) return;
+            discoveredDevices.set(device.id, device);
+            const selectBox = document.getElementById('deviceSelect');
+            // 用设备 ID 去重，避免同名车辆或重复扫描时选中错误的车辆。
+            let option = Array.from(selectBox.options).find(item => item.value === device.id);
+            if (!option) {
+                option = document.createElement('option');
+                option.value = device.id;
+                selectBox.appendChild(option);
             }
-
+            option.textContent = deviceName(device);
+            selectBox.value = device.id;
+            await connectSelectedDevice(device);
         } catch (error) {
             console.error(error);
-            updateStatus("扫描取消或未找到设备");
+            const message = error.name === 'NotFoundError' ? '扫描已取消或未找到设备' : `扫描失败：${error.message || error}`;
+            updateStatus(message + (writeCharacteristic && bluetoothDevice && bluetoothDevice.gatt.connected
+                ? `；仍连接 [${deviceName(bluetoothDevice)}]` : ''));
+        } finally {
+            isBusy = false;
+            updateControls();
         }
     }
 
     // 通过下拉框切换或重连设备
     async function selectDeviceFromDropdown() {
-        const selectBox = document.getElementById('deviceSelect');
-        const selectedId = selectBox.value;
-
-        if (selectedId === "last_saved") {
-            updateStatus("提示：历史设备需通过点击上方“扫描”按钮来重新获取系统蓝牙授权连接。");
+        if (isBusy) return;
+        const device = discoveredDevices.get(document.getElementById('deviceSelect').value);
+        if (!device) {
+            disconnectCurrentDevice();
+            document.getElementById('selectedDeviceName').textContent = '尚未选择';
+            updateStatus('未连接');
+            updateControls();
             return;
         }
-
-        if (discoveredDevices.has(selectedId)) {
-            bluetoothDevice = discoveredDevices.get(selectedId);
-            await connectSelectedDevice(bluetoothDevice);
-        }
+        await connectSelectedDevice(device);
     }
 
     // 建立 GATT 连接并寻找写特征值
     async function connectSelectedDevice(device) {
-        updateStatus(`正在连接 [${device.name}]...`);
+        isBusy = true;
+        disconnectCurrentDevice();
+        bluetoothDevice = device;
+        document.getElementById('selectedDeviceName').textContent = deviceName(device);
+        updateControls();
+        updateStatus(`正在连接 [${deviceName(device)}]...`);
 
-        device.addEventListener('gattserverdisconnected', onDisconnected);
+        try {
+            device.addEventListener('gattserverdisconnected', onDisconnected);
+            const server = await device.gatt.connect();
+            const services = await server.getPrimaryServices();
+            let writable = null;
 
-        const server = await device.gatt.connect();
-        const services = await server.getPrimaryServices();
-        let found = false;
-
-        for (let service of services) {
-            const characteristics = await service.getCharacteristics();
-            for (let char of characteristics) {
-                if (char.properties.write || char.properties.writeWithoutResponse) {
-                    writeCharacteristic = char;
-                    found = true;
-                    break;
-                }
+            for (const service of services) {
+                const characteristics = await service.getCharacteristics();
+                writable = characteristics.find(char => char.properties.write || char.properties.writeWithoutResponse);
+                if (writable) break;
             }
-            if (found) break;
-        }
+            if (!device.gatt.connected) throw new Error('车辆蓝牙已断开，请重新连接');
+            if (!writable) throw new Error('未找到可写的特征值通道');
 
-        if (found) {
-            updateStatus(`🟢 状态：[${device.name}] 已连接成功！可随时发送指令。`);
-        } else {
-            updateStatus("🔴 连接成功，但未找到可写的特征值通道！");
+            writeCharacteristic = writable;
+            saveConnectionHistory(device);
+            updateStatus(`🟢 [${deviceName(device)}] 已连接，可以发送指令。`);
+        } catch (error) {
+            writeCharacteristic = null;
+            console.error(error);
+            updateStatus(`🔴 [${deviceName(device)}] 连接失败：${error.message || error}`);
+        } finally {
+            isBusy = false;
+            updateControls();
         }
     }
 
-    function onDisconnected() {
-        updateStatus("⚠️ 车辆蓝牙已断开连接");
+    function onDisconnected(event) {
+        if (event.target !== bluetoothDevice) return;
         writeCharacteristic = null;
+        updateControls();
+        updateStatus(`⚠️ [${deviceName(bluetoothDevice)}] 蓝牙已断开，请重新选择车辆或扫描连接。`);
     }
 
     function resetBinding() {
-        localStorage.clear();
-        if (bluetoothDevice && bluetoothDevice.gatt.connected) {
-            bluetoothDevice.gatt.disconnect();
+        if (isBusy) return;
+        disconnectCurrentDevice();
+        discoveredDevices.clear();
+        let storageCleared = true;
+        try {
+            // 只清除本页记录，保留同一域名下其他页面的数据。
+            localStorage.removeItem(HISTORY_KEY);
+            localStorage.removeItem('niu_last_name');
+        } catch (error) {
+            storageCleared = false;
         }
-        writeCharacteristic = null;
+        showConnectionHistory(null);
         document.getElementById('deviceSelect').innerHTML = '<option value="">-- 请先点击下方按钮扫描车辆 --</option>';
-        document.getElementById('resetBtn').style.display = "none";
-        updateStatus("已清除所有记忆与绑定。");
+        document.getElementById('selectedDeviceName').textContent = '尚未选择';
+        updateControls();
+        if (!storageCleared) {
+            document.getElementById('historyHint').textContent = '浏览器存储清理失败，重新打开后可能仍显示旧记录。';
+        }
+        updateStatus('已断开连接并清除本页连接记录。');
+    }
+
+    // 预览与发送使用同一组包函数，保持原有 20 字节协议。
+    function buildCommand() {
+        const voltage = document.getElementById('voltage');
+        const capacity = document.getElementById('capacity');
+        const packet = new Uint8Array([
+            0x67, 0x84, 0x85, 0x59, 0x11, 0x12, 0x76, 0x99,
+            0x61, 0x22, 0x92, 0x43, 0x23, 0x54, 0x45, 0x39,
+            0x87, parseInt(voltage.value, 16), parseInt(capacity.value, 16), 0x26
+        ]);
+        return {
+            packet,
+            summary: `${voltage.selectedOptions[0].text} / ${capacity.selectedOptions[0].text}`,
+            hex: Array.from(packet, byte => byte.toString(16).padStart(2, '0').toUpperCase()).join(' ')
+        };
+    }
+
+    function updateCommandPreview() {
+        const command = buildCommand();
+        document.getElementById('commandSummary').textContent = command.summary;
+        document.getElementById('commandHex').textContent = command.hex;
+        return command;
     }
 
     // 2. 发送切换指令
     async function sendConfig() {
+        if (isBusy) return;
         if (!writeCharacteristic || !bluetoothDevice || !bluetoothDevice.gatt.connected) {
-            alert("请先扫描并连接车辆蓝牙！");
+            updateStatus('请先扫描并连接车辆蓝牙。');
+            updateControls();
             return;
         }
 
-        const vCode = parseInt(document.getElementById('voltage').value, 16);
-        const ahCode = parseInt(document.getElementById('capacity').value, 16);
-
-        // 组装 20 字节固定指令
-        const packet = new Uint8Array([
-            0x67, 0x84, 0x85, 0x59, 0x11, 0x12, 0x76, 0x99,
-            0x61, 0x22, 0x92, 0x43, 0x23, 0x54, 0x45, 0x39,
-            0x87, vCode, ahCode, 0x26
-        ]);
+        const command = updateCommandPreview();
+        const characteristic = writeCharacteristic;
+        const targetName = deviceName(bluetoothDevice);
+        isBusy = true;
+        updateControls();
+        updateStatus(`正在向 [${targetName}] 发送：${command.summary}...`);
 
         try {
-            if (writeCharacteristic.properties.writeWithoutResponse) {
-                await writeCharacteristic.writeValueWithoutResponse(packet);
+            if (characteristic.properties.writeWithoutResponse && typeof characteristic.writeValueWithoutResponse === 'function') {
+                await characteristic.writeValueWithoutResponse(command.packet);
             } else {
-                await writeCharacteristic.writeValue(packet);
+                await characteristic.writeValue(command.packet);
             }
-            updateStatus(`✅ 成功发送！已切至 ${document.getElementById('voltage').selectedOptions[0].text} / ${document.getElementById('capacity').selectedOptions[0].text}`);
-            alert("电压切换指令发送成功！请查看车体仪表盘。");
+            updateStatus(`✅ 已向 [${targetName}] 发送：${command.summary}。请查看车体仪表盘确认。`);
         } catch (error) {
             console.error(error);
-            alert("发送失败：" + error);
+            updateStatus(`🔴 发送失败：${error.message || error}`);
+        } finally {
+            isBusy = false;
+            updateControls();
         }
     }
 
     function updateStatus(text) {
-        document.getElementById('status').innerText = "状态：" + text;
+        document.getElementById('status').textContent = '状态：' + text;
     }
+
+    loadConnectionHistory();
+    updateCommandPreview();
+    updateControls();
 </script>
 
 </body>
